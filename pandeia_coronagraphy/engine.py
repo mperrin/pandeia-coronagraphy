@@ -35,6 +35,8 @@ from . import templates
 # Initialize the engine options
 options = EngineConfiguration()
 
+latest_on_the_fly_PSF = None
+
 def get_template(filename):
     ''' Look up a template filename.
     '''
@@ -94,6 +96,13 @@ def perform_calculation(calcfile):
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', category = np.VisibleDeprecationWarning) # Suppress float-indexing warnings
         results = pandeia_calculation(calcfile)
+    if on_the_fly_PSFs:
+        # Append PSF that was computed on-the-fly
+        results['psf'] = latest_on_the_fly_PSF
+
+    #get fullwell for instrument + detector combo
+    #instrument = InstrumentFactory(config=calcfile['configuration'])
+    #fullwell = instrument.get_detector_pars()['fullwell']
 
     # Reset the fixed seed state set by the pandeia engine
     # to avoid unexpected results elsewhere
@@ -101,7 +110,26 @@ def perform_calculation(calcfile):
 
     return results
     
-def get_psf(self, wave, instrument, aperture_name, source_offset=(0, 0)):
+
+def on_the_fly_psf_wrapper(self,*args,**kwargs):
+    '''
+    An additional layer to allow the use of lru_cache on
+    on-the-fly PSFs (which requires hashable inputs)
+
+    '''
+    global latest_on_the_fly_PSF
+
+
+    # Include the on-the-fly override options in the hash key for the lru_cache
+    otf_options = tuple(sorted(on_the_fly_webbpsf_options.items()) +
+            [on_the_fly_webbpsf_opd,])
+    tmp = get_psf_on_the_fly(*args,**kwargs,otf_options=otf_options)
+    latest_on_the_fly_PSF = deepcopy(tmp)
+    return tmp
+
+@lru_cache(maxsize=on_the_fly_cache_maxsize)
+def get_psf(self, wave, instrument, aperture_name, source_offset=(0, 0), otf_options=None):
+def get_psf_on_the_fly(wave, instrument, aperture_name, source_offset=(0, 0), otf_options=None):
     #Make the instrument and determine the mode
     if instrument.upper() == 'NIRCAM':
         ins = webbpsf.NIRCam()
@@ -118,11 +146,9 @@ def get_psf(self, wave, instrument, aperture_name, source_offset=(0, 0)):
             # need to toggle to LW detector.
             ins.detector='A5'
             ins.pixelscale = ins._pixelscale_long
-    elif instrument.upper() == 'MIRI':
-        ins = webbpsf.MIRI()
     else:
-        raise ValueError('Only NIRCam and MIRI are supported instruments!')
-    image_mask, pupil_mask, fov_pixels, trim_fov_pixels, pix_scl = parse_aperture(aperture_name)
+        ins = webbpsf.Instrument(instrument)
+    image_mask, pupil_mask, fov_pixels, trim_fov_pixels, pix_scl = parse_aperture(aperture_name, instrument.upper())
     ins.image_mask = image_mask
     ins.pupil_mask = pupil_mask
 
@@ -132,12 +158,18 @@ def get_psf(self, wave, instrument, aperture_name, source_offset=(0, 0)):
 
     if options.on_the_fly_webbpsf_opd is not None:
         ins.pupilopd = options.on_the_fly_webbpsf_opd
+        # Note, here a Python None object means 'use default OPD', but
+        # specially also check for the string 'none' in which case make it
+        # use NO OPD.
+        if on_the_fly_webbpsf_opd =='none':
+            ins.pupilopd = None
 
     #get offset
     ins.options['source_offset_r'] = source_offset[0]
     ins.options['source_offset_theta'] = source_offset[1]
     ins.options['output_mode'] = 'oversampled'
     ins.options['parity'] = 'odd'
+    ins.pixelscale = pix_scl   # ensure precise agreement w/ what Pandeia expects
 
     psf_result = calc_psf_and_center(ins, wave, source_offset[0], source_offset[1], 3,
                             pix_scl, fov_pixels, trim_fov_pixels=trim_fov_pixels)
@@ -160,32 +192,51 @@ def get_psf(self, wave, instrument, aperture_name, source_offset=(0, 0)):
 
     return psf
 
-def parse_aperture(aperture_name):
+def parse_aperture(aperture_name, instrument_name):
     '''
     Return [image mask, pupil mask, fov_pixels, trim_fov_pixels, pixelscale]
     '''
-    
+
     aperture_keys = ['mask210r','mask335r','mask430r','masklwb','maskswb',
                      'fqpm1065','fqpm1140','fqpm1550','lyot2300']
     assert aperture_name in aperture_keys, \
         'Aperture {} not recognized! Must be one of {}'.format(aperture_name, aperture_keys)
 
-    nc = webbpsf.NIRCam()
-    miri = webbpsf.MIRI()
 
-    aperture_dict = {
-        'mask210r' : ['MASK210R','CIRCLYOT', 101, None, nc._pixelscale_short],
-        'mask335r' : ['MASK335R','CIRCLYOT', 101, None, nc._pixelscale_long],
-        'mask430r' : ['MASK430R','CIRCLYOT', 101, None, nc._pixelscale_long],
-        'masklwb' : ['MASKLWB','WEDGELYOT', 351, 101, nc._pixelscale_long],
-        'maskswb' : ['MASKSWB','WEDGELYOT', 351, 101, nc._pixelscale_short],
-        'fqpm1065' : ['FQPM1065','MASKFQPM', 81, None, miri.pixelscale],
-        'fqpm1140' : ['FQPM1140','MASKFQPM', 81, None, miri.pixelscale],
-        'fqpm1550' : ['FQPM1550','MASKFQPM', 81, None, miri.pixelscale],
-        'lyot2300' : ['LYOT2300','MASKLYOT', 81, None, miri.pixelscale]
-        }
-  
+    if instrument_name =='NIRCAM':
+        nc = webbpsf.NIRCam()
+        aperture_dict = {
+            'mask210r' : ['MASK210R','CIRCLYOT', 101, None, nc._pixelscale_short],
+            'mask335r' : ['MASK335R','CIRCLYOT', 101, None, nc._pixelscale_long],
+            'mask430r' : ['MASK430R','CIRCLYOT', 101, None, nc._pixelscale_long],
+            'masklwb' : ['MASKLWB','WEDGELYOT', 351, 101, nc._pixelscale_long],
+            'maskswb' : ['MASKSWB','WEDGELYOT', 351, 101, nc._pixelscale_short],
+            'sw': [None, None, 101, None, nc._pixelscale_short],
+            'lw': [None, None, 101, None, nc._pixelscale_short],
+            }
+    elif instrument_name=='MIRI':
+        miri = webbpsf.MIRI()
+        aperture_dict = {
+            'fqpm1065' : ['FQPM1065','MASKFQPM', 81, None, miri.pixelscale],
+            'fqpm1140' : ['FQPM1140','MASKFQPM', 81, None, miri.pixelscale],
+            'fqpm1550' : ['FQPM1550','MASKFQPM', 81, None, miri.pixelscale],
+            'lyot2300' : ['LYOT2300','MASKLYOT', 81, None, miri.pixelscale],
+            'imager' : [None,None, 81, None, 0.11 ], # slightly diff from the 0.111 in webbpsf, but has to match Pandeia
+                                                     # exactly or we trigger an error in engine.astro_spectrum.AdvancedPSF
+                                                     # I dunno why this is the case for MIRI imaging but not coronagraphy. ??
+            }
+    elif instrument_name =='NIRISS' or instrument_name=='NIRSPEC' or instrument_name=='FGS':
+        desired_psf_size ={'NIRISS':81, 'NIRSPEC':41, "FGS":81}
+        inst = webbpsf.Instrument(instrument_name)
+        aperture_dict = {
+            'imager': [None, None, desired_psf_size[instrument_name], None, inst.pixelscale],
+            }
+    else:
+        raise NotImplementedError("Instrument {} is not yet supported for on-the-fly PSFs; need to update engine.py".format(instrument_name))
+
     return aperture_dict[aperture_name]
+
+
 
 def calc_psf_and_center(ins, wave, offset_r, offset_theta, oversample, pix_scale, fov_pixels, trim_fov_pixels=None):
     '''

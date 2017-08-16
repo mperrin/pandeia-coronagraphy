@@ -7,10 +7,10 @@ import pkg_resources
 import sys
 import warnings
 
-#if sys.version_info > (3, 2):
-#    from functools import lru_cache
-#else:
-#    from functools32 import lru_cache
+if sys.version_info > (3, 2):
+    from functools import lru_cache
+else:
+    from functools32 import lru_cache
 
 import numpy as np
 
@@ -36,6 +36,10 @@ from . import templates
 options = EngineConfiguration()
 
 latest_on_the_fly_PSF = None
+cache_maxsize = 256     # Number of monochromatic PSFs stored in an LRU cache
+                        # Should speed up calculations that involve modifying things
+                        # like exposure time and don't actually require calculating new PSFs.
+
 
 def get_template(filename):
     ''' Look up a template filename.
@@ -75,6 +79,7 @@ def calculate_batch(calcfiles,nprocesses=None):
 
     return results
 
+
 def perform_calculation(calcfile):
     '''
     Manually decorate pandeia.engine.perform_calculation to circumvent
@@ -83,7 +88,7 @@ def perform_calculation(calcfile):
     Updates to the saturation computation could go here as well.
     '''
     if options.on_the_fly_PSFs:
-        pandeia.engine.psf_library.PSFLibrary.get_psf = get_psf
+        pandeia.engine.psf_library.PSFLibrary.get_psf = get_psf_cache_wrapper
     else:
         pandeia.engine.psf_library.PSFLibrary.get_psf = pandeia_get_psf
     if options.pandeia_fixed_seed:
@@ -96,7 +101,7 @@ def perform_calculation(calcfile):
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', category = np.VisibleDeprecationWarning) # Suppress float-indexing warnings
         results = pandeia_calculation(calcfile)
-    if on_the_fly_PSFs:
+    if options.on_the_fly_PSFs:
         # Append PSF that was computed on-the-fly
         results['psf'] = latest_on_the_fly_PSF
 
@@ -109,27 +114,39 @@ def perform_calculation(calcfile):
     np.random.seed(None) 
 
     return results
-    
 
-def on_the_fly_psf_wrapper(self,*args,**kwargs):
+
+def get_psf_cache_wrapper(self,*args,**kwargs):
     '''
     An additional layer to allow the use of lru_cache on
-    on-the-fly PSFs (which requires hashable inputs)
+    on-the-fly PSFs (which requires hashable inputs,
+    and should not include the 'self' argument that
+    was added in pandeia 1.1.1...
 
     '''
     global latest_on_the_fly_PSF
 
 
     # Include the on-the-fly override options in the hash key for the lru_cache
-    otf_options = tuple(sorted(on_the_fly_webbpsf_options.items()) +
-            [on_the_fly_webbpsf_opd,])
-    tmp = get_psf_on_the_fly(*args,**kwargs,otf_options=otf_options)
+    otf_options = tuple(sorted(options.on_the_fly_webbpsf_options.items()) +
+            [options.on_the_fly_webbpsf_opd,])
+
+    # this may be needed in get_psf; extract it so we can avoid
+    # passing in 'self', which isn't hashable for the cache lookup
+    full_aperture = self._psfs[0]['aperture_name']
+
+    if options.verbose:
+        print("Getting PSF for: {}, {}, options={}, aperture={}".format( args, kwargs, otf_options, full_aperture))
+
+    tmp = get_psf(*args,**kwargs,otf_options=otf_options,
+            full_aperture=full_aperture)
     latest_on_the_fly_PSF = deepcopy(tmp)
     return tmp
 
-@lru_cache(maxsize=on_the_fly_cache_maxsize)
-def get_psf(self, wave, instrument, aperture_name, source_offset=(0, 0), otf_options=None):
-def get_psf_on_the_fly(wave, instrument, aperture_name, source_offset=(0, 0), otf_options=None):
+
+@lru_cache(maxsize=cache_maxsize)
+def get_psf( wave, instrument, aperture_name, source_offset=(0, 0), otf_options=None,
+        full_aperture=None):
     #Make the instrument and determine the mode
     if instrument.upper() == 'NIRCAM':
         ins = webbpsf.NIRCam()
@@ -139,7 +156,7 @@ def get_psf_on_the_fly(wave, instrument, aperture_name, source_offset=(0, 0), ot
         # get_psf but is stored in the full aperture name in self._psfs
         if aperture_name in ['masklwb', 'maskswb']:
             # Everything after the aperture name is the filter name.
-            full_aperture = self._psfs[0]['aperture_name']
+            #full_aperture = self._psfs[0]['aperture_name']
             fname = full_aperture[full_aperture.find(aperture_name) + len(aperture_name):]
             ins.filter = fname
         if wave > 2.5:
@@ -192,13 +209,14 @@ def get_psf_on_the_fly(wave, instrument, aperture_name, source_offset=(0, 0), ot
 
     return psf
 
+
 def parse_aperture(aperture_name, instrument_name):
     '''
     Return [image mask, pupil mask, fov_pixels, trim_fov_pixels, pixelscale]
     '''
 
-    aperture_keys = ['mask210r','mask335r','mask430r','masklwb','maskswb',
-                     'fqpm1065','fqpm1140','fqpm1550','lyot2300']
+    aperture_keys = ['mask210r','mask335r','mask430r','masklwb','maskswb', 'sw','lw',
+                     'fqpm1065','fqpm1140','fqpm1550','lyot2300','imager']
     assert aperture_name in aperture_keys, \
         'Aperture {} not recognized! Must be one of {}'.format(aperture_name, aperture_keys)
 
@@ -235,7 +253,6 @@ def parse_aperture(aperture_name, instrument_name):
         raise NotImplementedError("Instrument {} is not yet supported for on-the-fly PSFs; need to update engine.py".format(instrument_name))
 
     return aperture_dict[aperture_name]
-
 
 
 def calc_psf_and_center(ins, wave, offset_r, offset_theta, oversample, pix_scale, fov_pixels, trim_fov_pixels=None):
@@ -426,7 +443,7 @@ def ConvolvedSceneCubeinit(self, scene, instrument, background=None, psf_library
         self.create_flux_cube(background=self.background)
 
     self.dist = self.grid.dist()
-    
+
 pandeia.engine.astro_spectrum.ConvolvedSceneCube.__init__ = ConvolvedSceneCubeinit
 
 

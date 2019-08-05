@@ -43,18 +43,12 @@
                 "geometry": "point"
             },
             "spectrum": {
-                "extinction": {
-                    "bandpass": "v",
-                    "law": "mw_rv_31",
-                    "unit": "mag",
-                    "value": 0.0
-                },
                 "lines": [],
                 "name": "generic source",
                 "normalization": {
+                    "bandpass": "bessel,h",
                     "norm_flux": 5.2,
                     "norm_fluxunit": "abmag",
-                    "bandpass": "bessel,h",
                     "type": "photsys"
                 },
                 "redshift": 0.0,
@@ -66,22 +60,27 @@
         }
     ],
     "strategy": {
-        "annulus_shape": "circular",
-        "aperture_size": 0.08,
-        "background_subtraction": true,
-        "calc_type": "contrast",
-        "contrast_azimuth": 45.0,
-        "contrast_separation": 1.0,
-        "delta_opd": 0.0,
         "method": "coronagraphy",
-        "ncontrast": 100,
-        "pointing_error": [
-            0.0,
-            0.0
-        ],
+        "aperture_size": 0.08,
+        "sky_annulus": [0.1,0.2],
+        "contrast_azimuth": 45.0,
+        "annulus_shape": "circular",
+        "background_subtraction": true,
+        "display_string": "Coronagraphy",
+        "calc_type": "contrast",
+        "permitted_units": ["arcsec"],
+        "units": "arcsec",
+        "target_type": "",
+        "target_source": 1,
+        "target_xy": [0.0, 0.0],
+        "scene_rotation": 0.0,
         "psf_subtraction": "optimal",
+        "psf_subtraction_xy": [100.0, 100.0],
+        "pointing_error": [0.0, 0.0],
+        "delta_opd": 0.0,
+        "ncontrast": 100,
         "psf_subtraction_source": {
-            "id": 1,
+            "id": 99,
             "position": {
                 "orientation": 0.0,
                 "x_offset": 0.0,
@@ -91,18 +90,12 @@
                 "geometry": "point"
             },
             "spectrum": {
-                "extinction": {
-                    "bandpass": "v",
-                    "law": "mw_rv_31",
-                    "unit": "mag",
-                    "value": 0.0
-                },
                 "lines": [],
                 "name": "generic source",
                 "normalization": {
+                    "bandpass": "bessel,h",
                     "norm_flux": 1000.0,
                     "norm_fluxunit": "abmag",
-                    "bandpass": "bessel,h",
                     "type": "photsys"
                 },
                 "redshift": 0.0,
@@ -111,19 +104,6 @@
                     "key": "a5v"
                 }
             }
-        },
-        "psf_subtraction_xy": [100.0, 100.0],
-        "scene_rotation": 0.0,
-        "sky_annulus": [
-            0.1,
-            0.2
-        ],
-        "target_source": 1,
-        "target_type": "",
-        "target_xy": [
-            0.0,
-            0.0
-        ],
-        "units": "arcsec"
+        }
     }
 }

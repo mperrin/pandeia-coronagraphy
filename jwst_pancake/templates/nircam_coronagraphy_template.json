@@ -28,7 +28,7 @@
             "disperser": null,
             "filter": "f210m",
             "instrument": "nircam",
-            "mode": "coronagraphy"
+            "mode": "imaging"
         }
     },
     "scene": [
